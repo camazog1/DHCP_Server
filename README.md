@@ -1,7 +1,5 @@
 # Proyecto DHCP_Server
 
-Aquí tienes la sección de prerequisitos con la instalación de `gcc`:
-
 ## Prerrequisitos
 
 1. **Sistema o subsistema de Linux** (por ejemplo, Ubuntu, Debian, Fedora).
