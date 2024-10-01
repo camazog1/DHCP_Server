@@ -6,16 +6,15 @@ SERVER_PORT = 67
 
 def dhcp_discover():
     # Crear un socket de cliente
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((SERVER_IP, SERVER_PORT))
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Cambiar a SOCK_DGRAM
 
     # Enviar solicitud DHCP
     message = "DHCPDISCOVER"
-    client_socket.send(message.encode())
+    client_socket.sendto(message.encode(), (SERVER_IP, SERVER_PORT))  # Usar sendto para UDP
 
     # Recibir respuesta del servidor
-    response = client_socket.recv(1024).decode()
-    print(f"IP asignada por el servidor: {response}")
+    response, _ = client_socket.recvfrom(1024)  # Recibir la respuesta
+    print(f"IP asignada por el servidor: {response.decode()}")
 
     # Cerrar conexión
     client_socket.close()
