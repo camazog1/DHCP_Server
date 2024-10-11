@@ -3,18 +3,64 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #define PORT 67 
 #define MAX_BUFFER_SIZE 1024
 #define IP_POOL_SIZE 10
+#define MAX_THREADS 4 // Limitar a 4 hilos
+#define DNS "8.8.8.8"
+#define GATEWAY "192.168.0.0"
+#define NETMASK "255.255.255.0"
 
-char *ip_pool[IP_POOL_SIZE] = {"192.168.1.10", "192.168.1.11", "192.168.1.12"};
-int ip_allocated[IP_POOL_SIZE] = {0, 0, 0}; // Array para verificar IPs asignadas
+char *ip_pool[IP_POOL_SIZE];
+int ip_allocated[IP_POOL_SIZE] = {0};
+int active_threads = 0; // Contador de hilos activos
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void generate_ip_pool(char *ip_pool[], const char *start_ip, const char *end_ip) {
+    int start[4], end[4];
+    sscanf(start_ip, "%d.%d.%d.%d", &start[0], &start[1], &start[2], &start[3]);
+    sscanf(end_ip, "%d.%d.%d.%d", &end[0], &end[1], &end[2], &end[3]);
+
+    int idx = 0; 
+    for (int i = start[2]; i <= end[2]; i++) {
+        for (int j = start[3]; j <= end[3]; j++) {
+            if (idx >= IP_POOL_SIZE) return;
+            snprintf(ip_pool[idx], 16, "%d.%d.%d.%d", start[0], start[1], i, j);
+            idx++;
+        }
+    }
+}
+
+void handle_dhcprelease(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len, const char *released_ip) {
+    for (int i = 0; i < IP_POOL_SIZE; i++) {
+        if (strcmp(ip_pool[i], released_ip) == 0) {
+            ip_allocated[i] = 0; 
+            printf("IP liberada: %s\n", ip_pool[i]);
+
+            char mensaje[256]; 
+            sprintf(mensaje, "IP %s liberada correctamente", ip_pool[i]);
+            sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
+            return;
+        }
+    }
+    printf("IP no encontrada en el pool: %s\n", released_ip);
+    char mensaje[256]; 
+    sprintf(mensaje, "Error: IP no encontrada");
+    sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
+}
+
+void handle_dhcprequest(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len) {
+    char mensaje[256]; 
+    sprintf(mensaje, "OK");
+    sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
+}
 
 void handle_dhcpdiscover(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len) {
     char *assigned_ip = NULL;
     for (int i = 0; i < IP_POOL_SIZE; i++) {
-        if (ip_allocated[i] == 0) { 
+        if (ip_allocated[i] == 0) {
             assigned_ip = ip_pool[i]; 
             ip_allocated[i] = 1; 
             break; 
@@ -23,14 +69,19 @@ void handle_dhcpdiscover(int socket_client, struct sockaddr_in *client_addr, soc
 
     printf("Se ofreció la IP %s al cliente.\n", assigned_ip ? assigned_ip : "No hay IPs disponibles");
     if (assigned_ip != NULL) {
-        sendto(socket_client, assigned_ip, strlen(assigned_ip), 0, (struct sockaddr *)client_addr, addr_len);
+        char mensaje[256]; 
+        sprintf(mensaje, "IP: %s\nMascara: %s\nDNS: %s\nGateway: %s", assigned_ip, NETMASK, DNS, GATEWAY);
+        sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
     } else {
         char *no_ip_message = "No hay IPs disponibles.";
         sendto(socket_client, no_ip_message, strlen(no_ip_message), 0, (struct sockaddr *)client_addr, addr_len);
     }
 }
 
-void handle_client(int socket_client) {
+void *handle_client(void *arg) {
+    int socket_client = *(int *)arg;
+    free(arg);  // Liberar memoria asignada para el socket del cliente
+
     char buffer[MAX_BUFFER_SIZE];
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
@@ -49,37 +100,82 @@ void handle_client(int socket_client) {
 
         if (strcmp(buffer, "DHCPDISCOVER") == 0) {
             handle_dhcpdiscover(socket_client, &client_addr, addr_len);
-        } else {
+        } 
+        else if (strcmp(buffer, "DHCPREQUEST") == 0){
+            handle_dhcprequest(socket_client, &client_addr, addr_len);
+        } 
+        else if (strstr(buffer, "DHCPRELEASE") != NULL) {
+            char *released_ip = strtok(buffer + strlen("DHCPRELEASE: "), " ");
+            if (released_ip != NULL) {
+                handle_dhcprelease(socket_client, &client_addr, addr_len, released_ip);
+            }
+        }
+        else {
             printf("Petición no reconocida: %s\n", buffer);
         }
     }
+
+    close(socket_client);
+
+    pthread_mutex_lock(&mutex);
+    active_threads--;  // Disminuir el contador de hilos activos
+    pthread_mutex_unlock(&mutex);
+
+    return NULL;
 }
 
 int main() {
-    int socket_client;
+    for (int i = 0; i < IP_POOL_SIZE; i++) {
+        ip_pool[i] = malloc(16 * sizeof(char));
+    }
+    generate_ip_pool(ip_pool, "192.168.0.1", "192.168.0.10");
+
+    int socket_server;
     struct sockaddr_in server_addr;
 
-    socket_client = socket(AF_INET, SOCK_DGRAM, 0);  // Usar SOCK_DGRAM para UDP
-    if (socket_client < 0) {
+    socket_server = socket(AF_INET, SOCK_DGRAM, 0);  
+    if (socket_server < 0) {
         perror("socket");
         exit(EXIT_FAILURE);
     }
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY; // Escuchar en todas las interfaces
+    server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    if (bind(socket_client, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(socket_server, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("bind");
-        close(socket_client);
+        close(socket_server);
         exit(EXIT_FAILURE);
     }
 
     printf("Servidor DHCP en ejecución en el puerto %i ...\n", PORT);
 
-    handle_client(socket_client); // Manejar clientes
+    while (1) {
+        pthread_mutex_lock(&mutex);
+        if (active_threads < MAX_THREADS) {  // Limitar a 4 hilos
+            pthread_mutex_unlock(&mutex);
 
-    close(socket_client);
+            int *client_socket = malloc(sizeof(int));
+            *client_socket = socket_server; 
+
+            pthread_t thread;
+            if (pthread_create(&thread, NULL, handle_client, client_socket) != 0) {
+                perror("Error creando el hilo");
+                free(client_socket);
+            } else {
+                pthread_detach(thread);  // No necesitamos esperar a que termine el hilo
+                pthread_mutex_lock(&mutex);
+                active_threads++;  // Incrementar el contador de hilos activos
+                pthread_mutex_unlock(&mutex);
+            }
+        } else {
+            pthread_mutex_unlock(&mutex);
+            sleep(1); // Espera un momento antes de volver a intentar crear hilos
+        }
+    }
+
+    close(socket_server);
     return 0;
 }
