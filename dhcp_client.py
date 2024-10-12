@@ -58,8 +58,15 @@ def dhcp_discover():
     response, _ = client_socket.recvfrom(1024) 
     response_decoded = response.decode()
     
-    ip, mask, dns, gateway = parse_response(response_decoded)
-    dhcp_request(ip, mask, dns, gateway)
+    if response_decoded != "No hay IPs disponibles.":
+        ip, mask, dns, gateway = parse_response(response_decoded)
+        dhcp_request(ip, mask, dns, gateway)
+    else:
+        print("El servidor no tiene IP's disponibles")
+        ip = None
+        mask = None
+        dns = None
+        gateway = None
     
     return ip, mask, dns, gateway
 
@@ -88,5 +95,7 @@ if __name__ == "__main__":
                 DNS = None
                 GATEWAY = None
         else:
+            if IP != None:
+                dchp_release(IP)
             break
                 
