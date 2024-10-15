@@ -2,7 +2,7 @@ import socket
 import re
 
 # Definir la IP y el puerto del servidor
-SERVER_IP = "127.0.0.1"
+SERVER_IP = "255.255.255.255"
 SERVER_PORT = 67
 
 def parse_response(response):
@@ -26,16 +26,18 @@ def parse_response(response):
 
     return IP, MASK, DNS, GATEWAY
 
-def dchp_release(ip):
+def dchp_release():
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    message = "DHCPRELEASE: " + str(ip)
-    client_socket.sendto(message.encode(), (SERVER_IP, SERVER_PORT)) 
+    message = "DHCPRELEASE: " + str(IP)
+    client_socket.sendto(message.encode(), (GATEWAY, SERVER_PORT)) 
     client_socket.close()
 
 def dhcp_request(ip, mask, dns, gateway):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
     message = "DHCPREQUEST"
-    client_socket.sendto(message.encode(), (SERVER_IP, SERVER_PORT)) 
+    
+    # Enviar el mensaje DHCPREQUEST a la dirección GATEWAY en lugar de broadcast
+    client_socket.sendto(message.encode(), (gateway, SERVER_PORT)) 
     
     response, _ = client_socket.recvfrom(1024) 
     response_decoded = response.decode()
@@ -47,28 +49,31 @@ def dhcp_request(ip, mask, dns, gateway):
         print("DNS:", dns)
         print("Gateway:", gateway)
     else:
-        print("error")
-        
+        print("Error en la solicitud DHCP.")
 
 def dhcp_discover():
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # Habilitar el broadcast
     message = "DHCPDISCOVER"
-    client_socket.sendto(message.encode(), (SERVER_IP, SERVER_PORT)) 
-
-    response, _ = client_socket.recvfrom(1024) 
-    response_decoded = response.decode()
     
-    if response_decoded != "No hay IPs disponibles.":
-        ip, mask, dns, gateway = parse_response(response_decoded)
-        dhcp_request(ip, mask, dns, gateway)
-    else:
-        print("El servidor no tiene IP's disponibles")
-        ip = None
-        mask = None
-        dns = None
-        gateway = None
+    try:
+        client_socket.sendto(message.encode(), (SERVER_IP, SERVER_PORT))
+        response, _ = client_socket.recvfrom(1024)
+        response_decoded = response.decode()
+
+        if response_decoded != "No hay IPs disponibles.":
+            ip, mask, dns, gateway = parse_response(response_decoded)
+            dhcp_request(ip, mask, dns, gateway)
+        else:
+            print("El servidor no tiene IP's disponibles")
+            ip, mask, dns, gateway = None, None, None, None
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        client_socket.close() 
     
     return ip, mask, dns, gateway
+
 
 if __name__ == "__main__":
     IP = None
@@ -76,10 +81,10 @@ if __name__ == "__main__":
     DNS = None
     GATEWAY = None
     while True:
-        print("1. DISCOVER\n2. RELEASE\n3. APAGAR")
+        print("1. DISCOVER\n2. RELEASE\n3. IPCONFIG")
         option = int(input("Seleccione: "))
         if option == 1:
-            if IP == None:
+            if IP is None:
                 IP, MASK, DNS, GATEWAY = dhcp_discover()
             else:
                 print("Ya existe IP asignada")
@@ -88,14 +93,18 @@ if __name__ == "__main__":
                 print("DNS:", DNS)
                 print("Gateway:", GATEWAY)
         elif option == 2:
-            if IP != None:
-                dchp_release(IP)
+            if IP is not None:
+                dchp_release()
                 IP = None
                 MASK = None
                 DNS = None
                 GATEWAY = None
+        elif option == 3:
+            print("IP:", IP)
+            print("Máscara:", MASK)
+            print("DNS:", DNS)
+            print("Gateway:", GATEWAY)
         else:
-            if IP != None:
-                dchp_release(IP)
+            if IP is not None:
+                dchp_release()
             break
-                

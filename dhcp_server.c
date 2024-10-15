@@ -4,19 +4,54 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <netdb.h>
 
 #define PORT 67 
 #define MAX_BUFFER_SIZE 1024
 #define IP_POOL_SIZE 10
 #define MAX_THREADS 4 // Limitar a 4 hilos
 #define DNS "8.8.8.8"
-#define GATEWAY "192.168.0.0"
 #define NETMASK "255.255.255.0"
+
+char GATEWAY[NI_MAXHOST];
 
 char *ip_pool[IP_POOL_SIZE];
 int ip_allocated[IP_POOL_SIZE] = {0};
 int active_threads = 0; // Contador de hilos activos
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void get_server_ip(char *GATEWAY, size_t size) {
+    struct ifaddrs *ifaddr, *ifa;
+    int family;
+    char host[NI_MAXHOST];
+
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        exit(EXIT_FAILURE);
+    }
+
+    // Recorre todas las interfaces de red
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+
+        family = ifa->ifa_addr->sa_family;
+
+        // Solo IPv4 (AF_INET)
+        if (family == AF_INET) {
+            if (getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST) == 0) {
+                if (strcmp(ifa->ifa_name, "lo") != 0) {
+                    strncpy(GATEWAY, host, size);
+                    break;
+                }
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+}
 
 void generate_ip_pool(char *ip_pool[], const char *start_ip, const char *end_ip) {
     int start[4], end[4];
@@ -124,11 +159,19 @@ void *handle_client(void *arg) {
     return NULL;
 }
 
+void init_gateway() {
+    get_server_ip(GATEWAY, sizeof(GATEWAY));
+}
+
 int main() {
     for (int i = 0; i < IP_POOL_SIZE; i++) {
         ip_pool[i] = malloc(16 * sizeof(char));
     }
+
     generate_ip_pool(ip_pool, "192.168.0.1", "192.168.0.10");
+    
+    init_gateway();
+    printf("Server IP (Gateway): %s\n", GATEWAY);
 
     int socket_server;
     struct sockaddr_in server_addr;
