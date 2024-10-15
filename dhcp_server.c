@@ -8,20 +8,35 @@
 #include <sys/socket.h>
 #include <ifaddrs.h>
 #include <netdb.h>
+#include <time.h> 
 
+#define LEASE_TIME 10  // 300 segundos = 5 minutos
 #define PORT 67 
 #define MAX_BUFFER_SIZE 1024
 #define IP_POOL_SIZE 10
-#define MAX_THREADS 4 // Limitar a 4 hilos
+#define MAX_THREADS 4 
 #define DNS "8.8.8.8"
 #define NETMASK "255.255.255.0"
+
 
 char GATEWAY[NI_MAXHOST];
 
 char *ip_pool[IP_POOL_SIZE];
 int ip_allocated[IP_POOL_SIZE] = {0};
-int active_threads = 0; // Contador de hilos activos
+time_t ip_lease_time[IP_POOL_SIZE];
+int active_threads = 0;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void check_ip_leases() {
+    time_t current_time = time(NULL); 
+    for (int i = 0; i < IP_POOL_SIZE; i++) {
+        if (ip_allocated[i] && difftime(current_time, ip_lease_time[i]) >= LEASE_TIME) {
+            ip_allocated[i] = 0; 
+            printf("IP %s ha sido liberada por expiración del tiempo de vida.\n", ip_pool[i]);
+        }
+    }
+}
+
 
 void get_server_ip(char *GATEWAY, size_t size) {
     struct ifaddrs *ifaddr, *ifa;
@@ -86,18 +101,48 @@ void handle_dhcprelease(int socket_client, struct sockaddr_in *client_addr, sock
     sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
 }
 
-void handle_dhcprequest(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len) {
-    char mensaje[256]; 
-    sprintf(mensaje, "OK");
-    sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
+void dhcp_acknowledge(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len, const char *ip_address) {
+    if (ip_address != NULL && strlen(ip_address) > 0) {
+        // Si la dirección IP es válida, envía "OK"
+        char mensaje[256];
+        sprintf(mensaje, "OK: IP %s aceptada", ip_address);
+        sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
+        printf("IP %s aceptada.\n", ip_address);
+    } else {
+        // Si la dirección IP es inválida, envía "Reintentar"
+        char *reintentar_message = "Reintentar: IP inválida";
+        sendto(socket_client, reintentar_message, strlen(reintentar_message), 0, (struct sockaddr *)client_addr, addr_len);
+        printf("IP inválida. Se solicitó reintentar.\n");
+    }
+}
+
+void handle_dhcprequest(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len, const char *requested_ip) {
+    int found = 0;
+    
+    for (int i = 0; i < IP_POOL_SIZE; i++) {
+        if (strcmp(ip_pool[i], requested_ip) == 0 && ip_allocated[i] == 0) {
+            ip_allocated[i] = 1;  // Asigna la IP
+            ip_lease_time[i] = time(NULL);  // Guarda el tiempo de asignación
+            found = 1;
+            break;
+        }
+    }
+
+    if (found) {
+        dhcp_acknowledge(socket_client, client_addr, addr_len, requested_ip);
+    } else {
+        dhcp_acknowledge(socket_client, client_addr, addr_len, NULL);  
+    }
 }
 
 void handle_dhcpdiscover(int socket_client, struct sockaddr_in *client_addr, socklen_t addr_len) {
     char *assigned_ip = NULL;
+    time_t current_time = time(NULL);  
+
     for (int i = 0; i < IP_POOL_SIZE; i++) {
         if (ip_allocated[i] == 0) {
             assigned_ip = ip_pool[i]; 
-            ip_allocated[i] = 1; 
+            ip_lease_time[i] = current_time; 
             break; 
         }
     }
@@ -122,7 +167,7 @@ void *handle_client(void *arg) {
     socklen_t addr_len = sizeof(client_addr);
     int n;
 
-    while (1) {
+    while (1) {    
         memset(buffer, 0, sizeof(buffer));
         n = recvfrom(socket_client, buffer, sizeof(buffer), 0, (struct sockaddr *)&client_addr, &addr_len);
 
@@ -136,8 +181,11 @@ void *handle_client(void *arg) {
         if (strcmp(buffer, "DHCPDISCOVER") == 0) {
             handle_dhcpdiscover(socket_client, &client_addr, addr_len);
         } 
-        else if (strcmp(buffer, "DHCPREQUEST") == 0){
-            handle_dhcprequest(socket_client, &client_addr, addr_len);
+        else if (strstr(buffer, "DHCPREQUEST") != NULL) {
+            char *released_ip = strtok(buffer + strlen("DHCPREQUEST: "), " ");
+            if (released_ip != NULL) {
+                handle_dhcprequest(socket_client, &client_addr, addr_len, released_ip);
+            }
         } 
         else if (strstr(buffer, "DHCPRELEASE") != NULL) {
             char *released_ip = strtok(buffer + strlen("DHCPRELEASE: "), " ");
@@ -196,6 +244,7 @@ int main() {
     printf("Servidor DHCP en ejecución en el puerto %i ...\n", PORT);
 
     while (1) {
+        check_ip_leases();
         pthread_mutex_lock(&mutex);
         if (active_threads < MAX_THREADS) {  // Limitar a 4 hilos
             pthread_mutex_unlock(&mutex);

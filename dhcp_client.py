@@ -34,7 +34,7 @@ def dchp_release():
 
 def dhcp_request(ip, mask, dns, gateway):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
-    message = "DHCPREQUEST"
+    message = "DHCPREQUEST: " + ip
     
     # Enviar el mensaje DHCPREQUEST a la dirección GATEWAY en lugar de broadcast
     client_socket.sendto(message.encode(), (gateway, SERVER_PORT)) 
@@ -43,13 +43,18 @@ def dhcp_request(ip, mask, dns, gateway):
     response_decoded = response.decode()
     print("Respuesta del servidor:", response_decoded)
     
-    if response_decoded == "OK":
+    if response_decoded.find("OK") != -1:
         print("IP:", ip)
         print("Máscara:", mask)
         print("DNS:", dns)
         print("Gateway:", gateway)
     else:
-        print("Error en la solicitud DHCP.")
+        print("Error en la solicitud DHCP. Configurando según APIPA...")
+        print("IP: 169.254.0.1")
+        print("Máscara: 255.255.0.0")
+        print("DNS: 8.8.8.8")
+        print("Gateway: ''")  
+        
 
 def dhcp_discover():
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
