@@ -10,7 +10,7 @@
 #include <netdb.h>
 #include <time.h> 
 
-#define LEASE_TIME 10  // 300 segundos = 5 minutos
+#define LEASE_TIME 3  // 300 segundos = 5 minutos
 #define PORT 67 
 #define MAX_BUFFER_SIZE 1024
 #define IP_POOL_SIZE 10
@@ -150,7 +150,7 @@ void handle_dhcpdiscover(int socket_client, struct sockaddr_in *client_addr, soc
     printf("Se ofreció la IP %s al cliente.\n", assigned_ip ? assigned_ip : "No hay IPs disponibles");
     if (assigned_ip != NULL) {
         char mensaje[256]; 
-        sprintf(mensaje, "IP: %s\nMascara: %s\nDNS: %s\nGateway: %s", assigned_ip, NETMASK, DNS, GATEWAY);
+        sprintf(mensaje, "IP: %s\nMascara: %s\nDNS: %s\nGateway: %s\nTiempo de arrendamiento: %d segundos", assigned_ip, NETMASK, DNS, GATEWAY, LEASE_TIME);
         sendto(socket_client, mensaje, strlen(mensaje), 0, (struct sockaddr *)client_addr, addr_len);
     } else {
         char *no_ip_message = "No hay IPs disponibles.";
